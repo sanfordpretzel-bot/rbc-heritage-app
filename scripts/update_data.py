@@ -79,34 +79,41 @@ def pos_sort_value(pos):
 def parse_espn(html):
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text("\n", strip=True)
-
-    # Collapse whitespace so ESPN's packed rows can be matched across line breaks.
-    blob = re.sub(r"\s+", " ", text)
+    lines = [clean_text(x) for x in text.splitlines() if clean_text(x)]
 
     players = []
     seen = set()
+    in_board = False
 
-    # Matches rows that look roughly like:
-    # 1-Image: EnglandMatt Fitzpatrick-19-2 16 ...
-    # 2-Image: USAScottie Scheffler-18-4 16 ...
-    # T4 15Image: USACollin Morikawa-13-4 F ...
-    pattern = re.compile(
-        r'(?P<pos>T?\d+)'                                   # pos
-        r'(?:\s+\d+|-)?'                                    # optional movement/dash
-        r'Image:\s*[A-Za-z .&\'-]+'                         # country/flag alt text
-        r'(?P<name>[A-Z][a-zA-Z.\'’\-]+(?:\s+[A-Z][a-zA-Z.\'’\-]+)+)'  # full name
-        r'(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)'              # score
-        r'(?P<today>[+-]?\d+|E|-)\s+'                       # today
-        r'(?P<thru>F|\d+\*?|\d{1,2}:\d{2}\s*[AP]M)',        # thru or tee time
-        re.IGNORECASE
+    row_pattern = re.compile(
+        r'^(?P<pos>T?\d+)'                              # position
+        r'(?:\s+\d+|-)?'                               # movement/dash after pos
+        r'【\d+†Image:[^】]+】'                          # flag image token
+        r'【\d+†(?P<name>[^】]+)】'                      # player name token
+        r'(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)'         # score
+        r'(?P<today>[+-]?\d+|E|-)\s+'                  # today
+        r'(?P<thru>F|\d+\*?)\b',                       # thru
+        re.IGNORECASE,
     )
 
-    for m in pattern.finditer(blob):
-        name = clean_text(m.group("name"))
-        pos = clean_text(m.group("pos")).upper()
-        score = normalize_score(m.group("score"))
-        thru = normalize_thru(m.group("thru"))
+    for line in lines:
+        upper = line.upper()
 
+        if "POS PLAYER SCORE TODAY THRU" in upper:
+            in_board = True
+            continue
+
+        if not in_board:
+            continue
+
+        if upper.startswith("ADVERTISEMENT") or upper.startswith("ESPN BET"):
+            break
+
+        m = row_pattern.match(line)
+        if not m:
+            continue
+
+        name = clean_text(m.group("name"))
         if len(name.split()) < 2:
             continue
 
@@ -117,10 +124,10 @@ def parse_espn(html):
 
         players.append(
             {
-                "pos": pos,
+                "pos": clean_text(m.group("pos")).upper(),
                 "name": name,
-                "score": score,
-                "thru": thru,
+                "score": normalize_score(m.group("score")),
+                "thru": normalize_thru(m.group("thru")),
             }
         )
 
