@@ -9,12 +9,7 @@ from bs4 import BeautifulSoup
 ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "data.json"
 
-PAGES = [
-    {
-        "name": "ESPN RBC Heritage leaderboard",
-        "url": "https://www.espn.com/golf/leaderboard/_/tournamentId/401811942",
-    }
-]
+URL = "https://www.espn.com/golf/leaderboard/_/tournamentId/401811942"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
@@ -22,6 +17,12 @@ HEADERS = {
 }
 
 SPECIAL_SCORES = {"CUT", "WD", "DQ", "MDF"}
+
+
+def clean_text(value):
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
 
 
 def load_existing():
@@ -33,33 +34,26 @@ def load_existing():
     return None
 
 
-def clean_text(value):
-    if value is None:
-        return ""
-    return re.sub(r"\s+", " ", str(value)).strip()
-
-
 def normalize_score(score):
-    score = clean_text(score).upper()
-    if not score:
+    s = clean_text(score).upper()
+    if not s:
         return ""
-    if score == "E":
+    if s == "0":
         return "E"
-    if score in SPECIAL_SCORES:
-        return score
-    if re.fullmatch(r"[+-]?\d+", score):
-        n = int(score)
-        return "E" if n == 0 else str(n)
-    return score
+    if s == "E":
+        return "E"
+    if s in SPECIAL_SCORES:
+        return s
+    return s
 
 
 def normalize_thru(thru):
-    thru = clean_text(thru).upper()
-    if not thru:
+    s = clean_text(thru).upper()
+    if not s:
         return "-"
-    if thru in {"F", "FIN", "FINAL"}:
+    if s in {"FINAL", "FIN"}:
         return "F"
-    return thru
+    return s
 
 
 def score_sort_value(score):
@@ -90,22 +84,26 @@ def parse_espn(html):
     players = []
     seen = set()
 
-    start_idx = None
-    for i, line in enumerate(lines):
-        if "POS PLAYER SCORE TODAY THRU" in line.upper():
-            start_idx = i + 1
-            break
+    in_board = False
 
-    if start_idx is None:
-        return []
-
-    for line in lines[start_idx:]:
+    for line in lines:
         upper = line.upper()
-        if upper.startswith("ADVERTISEMENT") or upper.startswith("ESPN BET") or upper.startswith("FULL LEADERBOARD"):
+
+        if "POS PLAYER SCORE TODAY THRU" in upper:
+            in_board = True
+            continue
+
+        if not in_board:
+            continue
+
+        if upper.startswith("ADVERTISEMENT") or upper.startswith("ESPN BET"):
             break
 
-        # Find player name inside the ESPN link token: 
-        name_match = re.search(r'【\d+†([^】]+)】', line)
+        # Remove image tokens like 
+        line2 = re.sub(r"【\d+†Image:[^】]+】", "", line)
+
+        # Find player name token like 
+        name_match = re.search(r"【\d+†([^】]+)】", line2)
         if not name_match:
             continue
 
@@ -113,34 +111,32 @@ def parse_espn(html):
         if len(name.split()) < 2:
             continue
 
-        # Remove image links so we can parse around the name more easily
-        line_no_images = re.sub(r'【\d+†Image:[^】]+】', '', line)
+        before = line2[:name_match.start()]
+        after = line2[name_match.end():]
 
-        # Position is at the very start, like:
+        # Position is the first leaderboard token at the start, e.g.:
         # 1-
         # 2 1
         # T4 15
         # T16-
-        pos_match = re.match(r'^(T?\d+)', line_no_images)
+        pos_match = re.match(r"^\s*(T?\d+)", before)
         if not pos_match:
             continue
         pos = pos_match.group(1).upper()
 
-        # After the player name, ESPN packs:
-        # score + today + thru
-        # examples:
-        # -19-2 14
-        # -13-4 F
-        # -12 E 17
-        # -6+1 F
-        after_name = line_no_images.split(name_match.group(0), 1)[-1].strip()
-
+        # After the name, ESPN has packed tokens like:
+        # -19-2 14 65 63 68--196
+        # -13-4 F 67 68 69 67 271
+        # -12 E 17 69 64 68--201
         stat_match = re.match(
-            r'(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)\s*'
-            r'(?P<today>[+-]?\d+|E|-)\s+'
-            r'(?P<thru>F|\d+\*?)\b',
-            after_name,
-            re.IGNORECASE
+            r"^\s*"
+            r"(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)"
+            r"\s*"
+            r"(?P<today>[+-]?\d+|E|-)"
+            r"\s+"
+            r"(?P<thru>F|\d+\*?)\b",
+            after,
+            flags=re.IGNORECASE,
         )
         if not stat_match:
             continue
@@ -150,23 +146,25 @@ def parse_espn(html):
             continue
         seen.add(key)
 
-        players.append({
-            "pos": pos,
-            "name": name,
-            "score": normalize_score(stat_match.group("score")),
-            "thru": normalize_thru(stat_match.group("thru")),
-        })
+        players.append(
+            {
+                "pos": pos,
+                "name": name,
+                "score": normalize_score(stat_match.group("score")),
+                "thru": normalize_thru(stat_match.group("thru")),
+            }
+        )
 
     return players
 
 
-def fetch_page(url):
-    resp = requests.get(url, headers=HEADERS, timeout=30)
+def fetch_html():
+    resp = requests.get(URL, headers=HEADERS, timeout=30)
     resp.raise_for_status()
     return resp.text
 
 
-def build_output(players, source_name, source_url, note):
+def build_output(players, note):
     players = sorted(
         players,
         key=lambda p: (
@@ -177,8 +175,8 @@ def build_output(players, source_name, source_url, note):
     )
     return {
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "source_name": source_name,
-        "source_url": source_url,
+        "source_name": "ESPN RBC Heritage leaderboard",
+        "source_url": URL,
         "note": note,
         "players": players,
     }
@@ -187,24 +185,20 @@ def build_output(players, source_name, source_url, note):
 def main():
     existing = load_existing()
 
-    for page in PAGES:
-        try:
-            html = fetch_page(page["url"])
-            players = parse_espn(html)
+    try:
+        html = fetch_html()
+        players = parse_espn(html)
 
-            if players:
-                output = build_output(
-                    players=players,
-                    source_name=page["name"],
-                    source_url=page["url"],
-                    note=f"Parsed {len(players)} players successfully.",
-                )
-                DATA_PATH.write_text(json.dumps(output, indent=2), encoding="utf-8")
-                print(f"Updated data.json from {page['name']} with {len(players)} players")
-                return
+        if players:
+            output = build_output(players, f"Parsed {len(players)} players successfully.")
+            DATA_PATH.write_text(json.dumps(output, indent=2), encoding="utf-8")
+            print(f"Updated data.json with {len(players)} players")
+            return
+        else:
+            print("Parser found 0 players")
 
-        except Exception as e:
-            print(f"Failed: {page['name']} -> {e}")
+    except Exception as e:
+        print(f"Failed to fetch/parse ESPN page: {e}")
 
     if existing:
         existing["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -212,12 +206,7 @@ def main():
         DATA_PATH.write_text(json.dumps(existing, indent=2), encoding="utf-8")
         print("Kept existing data.json because refresh failed")
     else:
-        fallback = build_output(
-            players=[],
-            source_name="None",
-            source_url="",
-            note="Refresh failed and there was no previous data.",
-        )
+        fallback = build_output([], "Refresh failed and there was no previous data.")
         DATA_PATH.write_text(json.dumps(fallback, indent=2), encoding="utf-8")
         print("Wrote empty fallback data.json")
 
