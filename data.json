@@ -1,7 +1,13 @@
 {
-  "updated_at": "2026-04-19 22:25:45 UTC",
-  "source_name": "Waiting for GitHub Action",
+  "updated_at": "2026-04-19 22:30:00 UTC",
+  "source_name": "Manual test data",
   "source_url": "",
-  "note": "Refresh failed; kept last good data.",
-  "players": []
+  "note": "Temporary manual data while scraper is being fixed.",
+  "players": [
+    { "pos": "T1", "name": "Scottie Scheffler", "score": "-18", "thru": "F" },
+    { "pos": "T1", "name": "Matt Fitzpatrick", "score": "-18", "thru": "F" },
+    { "pos": "3", "name": "Si Woo Kim", "score": "-16", "thru": "F" },
+    { "pos": "T4", "name": "Collin Morikawa", "score": "-13", "thru": "F" },
+    { "pos": "T4", "name": "Harris English", "score": "-13", "thru": "F" }
+  ]
 }
