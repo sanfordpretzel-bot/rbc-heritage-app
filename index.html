@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RBC Heritage Leaderboard</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --card: #ffffff;
+      --text: #111827;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --accent: #0f766e;
+      --link: #0f766e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 20px 14px 40px;
+    }
+    .header {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px 18px 14px;
+      margin-bottom: 14px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: clamp(28px, 4vw, 42px);
+      line-height: 1.05;
+    }
+    .sub {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .meta {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .board {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      overflow: hidden;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 72px 1fr 90px 90px;
+      align-items: stretch;
+    }
+    .cell {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .head {
+      font-size: 12px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 700;
+      background: #fafafa;
+    }
+    .row:hover .cell {
+      background: #fcfcfc;
+    }
+    .pos, .score, .thru {
+      font-weight: 700;
+    }
+    .player-name {
+      font-weight: 700;
+      font-size: 16px;
+      line-height: 1.2;
+    }
+    .player-name a {
+      color: var(--text);
+      text-decoration: none;
+    }
+    .player-name a:hover {
+      text-decoration: underline;
+    }
+    .player-links {
+      margin-top: 5px;
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .player-links a {
+      color: var(--link);
+      text-decoration: none;
+    }
+    .player-links a:hover {
+      text-decoration: underline;
+    }
+    .loading, .empty {
+      padding: 18px;
+      color: var(--muted);
+    }
+    .footer {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    @media (max-width: 640px) {
+      .grid {
+        grid-template-columns: 58px 1fr 72px 70px;
+      }
+      .cell {
+        padding: 10px 10px;
+      }
+      .player-name {
+        font-size: 15px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="header">
+      <h1>RBC Heritage Leaderboard</h1>
+      <div class="sub">
+        Live leaderboard with player links. Tap any player name for Wikipedia.
+      </div>
+      <div class="meta" id="meta">Loading…</div>
+    </div>
+
+    <div class="board">
+      <div class="grid">
+        <div class="cell head">Pos</div>
+        <div class="cell head">Player</div>
+        <div class="cell head">Score</div>
+        <div class="cell head">Thru</div>
+      </div>
+      <div id="rows">
+        <div class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <div class="footer">
+      Tip: if GitHub Pages seems cached, refresh with the URL parameter you already use, like <code>?v=8001</code>.
+    </div>
+  </div>
+
+  <script>
+    function wikiUrl(name) {
+      return "https://en.wikipedia.org/w/index.php?search=" + encodeURIComponent(name);
+    }
+
+    function googleUrl(query) {
+      return "https://www.google.com/search?q=" + encodeURIComponent(query);
+    }
+
+    function normalizeScoreValue(score) {
+      if (score === null || score === undefined) return 9999;
+      const s = String(score).trim().toUpperCase();
+      if (!s) return 9999;
+
+      const special = ["CUT", "WD", "DQ", "MDF"];
+      if (special.includes(s)) return 9000 + special.indexOf(s);
+
+      const cleaned = s.replace(/^E$/, "0").replace(/^\+/, "");
+      const n = Number(cleaned);
+      return Number.isFinite(n) ? n : 9999;
+    }
+
+    function normalizePosValue(pos) {
+      if (pos === null || pos === undefined) return 9999;
+      const s = String(pos).trim().toUpperCase().replace(/^T/, "");
+      const n = Number(s);
+      return Number.isFinite(n) ? n : 9999;
+    }
+
+    function formatScore(score) {
+      if (score === null || score === undefined || score === "") return "-";
+      const s = String(score).trim().toUpperCase();
+      if (s === "0") return "E";
+      return s;
+    }
+
+    function computeDisplayPositions(players) {
+      let lastScore = null;
+      let lastDisplay = null;
+      let numericRank = 0;
+
+      return players.map((p, idx) => {
+        const scoreVal = normalizeScoreValue(p.score);
+        const isNumeric = scoreVal < 9000;
+
+        if (!isNumeric) {
+          return { ...p, displayPos: p.pos || "-" };
+        }
+
+        numericRank = idx + 1;
+
+        if (lastScore !== null && scoreVal === lastScore) {
+          return { ...p, displayPos: "T" + lastDisplay.replace(/^T/, "") };
+        } else {
+          lastScore = scoreVal;
+          lastDisplay = String(numericRank);
+          return { ...p, displayPos: p.pos || String(numericRank) };
+        }
+      });
+    }
+
+    async function loadData() {
+      const meta = document.getElementById("meta");
+      const rows = document.getElementById("rows");
+
+      try {
+        const res = await fetch("data.json?v=" + Date.now(), { cache: "no-store" });
+        if (!res.ok) throw new Error("Could not load data.json");
+        const data = await res.json();
+
+        const players = Array.isArray(data.players) ? data.players.slice() : [];
+
+        players.sort((a, b) => {
+          const scoreDiff = normalizeScoreValue(a.score) - normalizeScoreValue(b.score);
+          if (scoreDiff !== 0) return scoreDiff;
+
+          const posDiff = normalizePosValue(a.pos) - normalizePosValue(b.pos);
+          if (posDiff !== 0) return posDiff;
+
+          return String(a.name || "").localeCompare(String(b.name || ""));
+        });
+
+        const withDisplayPositions = computeDisplayPositions(players);
+
+        meta.textContent =
+          "Updated: " + (data.updated_at || "-") +
+          (data.source_name ? " • Source: " + data.source_name : "") +
+          (data.note ? " • " + data.note : "");
+
+        if (!withDisplayPositions.length) {
+          rows.innerHTML = '<div class="empty">No leaderboard rows found.</div>';
+          return;
+        }
+
+        rows.innerHTML = withDisplayPositions.map((p) => {
+          const name = p.name || "Unknown";
+          const score = formatScore(p.score);
+          const thru = p.thru || "-";
+          const pos = p.displayPos || p.pos || "-";
+
+          return `
+            <div class="grid row">
+              <div class="cell pos">${pos}</div>
+              <div class="cell">
+                <div class="player-name">
+                  <a href="${wikiUrl(name)}" target="_blank" rel="noopener noreferrer">${name}</a>
+                </div>
+                <div class="player-links">
+                  <a href="${googleUrl(name + ' wife OR girlfriend')}" target="_blank" rel="noopener noreferrer">Wife or GF</a>
+                  <a href="${googleUrl(name + ' net worth')}" target="_blank" rel="noopener noreferrer">Net worth</a>
+                  <a href="${googleUrl(name + ' total PGA earnings')}" target="_blank" rel="noopener noreferrer">Total PGA earnings</a>
+                </div>
+              </div>
+              <div class="cell score">${score}</div>
+              <div class="cell thru">${thru}</div>
+            </div>
+          `;
+        }).join("");
+      } catch (err) {
+        meta.textContent = "Could not load leaderboard";
+        rows.innerHTML = '<div class="empty">Error loading data.</div>';
+        console.error(err);
+      }
+    }
+
+    loadData();
+  </script>
+</body>
+</html>
