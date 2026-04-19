@@ -6,19 +6,14 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "data.json"
 
 PAGES = [
     {
-        "name": "PGA TOUR RBC Heritage leaderboard",
-        "url": "https://www.pgatour.com/tournaments/2026/rbc-heritage/R2026012/leaderboard",
-    },
-    {
         "name": "ESPN RBC Heritage leaderboard",
         "url": "https://www.espn.com/golf/leaderboard/_/tournamentId/401811942",
-    },
+    }
 ]
 
 HEADERS = {
@@ -52,9 +47,8 @@ def normalize_score(score):
         return "E"
     if score in SPECIAL_SCORES:
         return score
-    m = re.match(r"^([+-]?\d+)$", score)
-    if m:
-        n = int(m.group(1))
+    if re.fullmatch(r"[+-]?\d+", score):
+        n = int(score)
         return "E" if n == 0 else str(n)
     return score
 
@@ -71,7 +65,7 @@ def normalize_thru(thru):
 def score_sort_value(score):
     s = normalize_score(score)
     if s in SPECIAL_SCORES:
-        return 9000 + sorted(SPECIAL_SCORES).index(s)
+        return 9000
     if s == "E":
         return 0
     try:
@@ -88,11 +82,7 @@ def pos_sort_value(pos):
         return 9999
 
 
-def parse_pga_tour(html):
-    """
-    Broad HTML parser using visible text patterns.
-    This is intentionally defensive because page markup may change.
-    """
+def parse_espn(html):
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text("\n", strip=True)
     lines = [clean_text(x) for x in text.splitlines() if clean_text(x)]
@@ -100,68 +90,45 @@ def parse_pga_tour(html):
     players = []
     seen = set()
 
-    # Looks for patterns like:
-    # T1 / 1 / 2
-    # Player Name
-    # -12 / E / WD
-    # F / 13 / 4*
+    # Find the start of the leaderboard section
+    start_idx = None
+    for i, line in enumerate(lines):
+        if "POS PLAYER SCORE TODAY THRU" in line.upper():
+            start_idx = i + 1
+            break
+
+    if start_idx is None:
+        return []
+
+    # ESPN rows look like:
+    # 1-:contentReference[oaicite:1]{index=1}-19-2 14 65 63 68--196
+    # T4 15-13-4 F 67 68 69 67 271
     #
-    # The PGA text snippets exposed by search results show Pos, Player, Tot, Thru.
-    for i in range(len(lines) - 3):
-      pos = lines[i].upper()
-      name = lines[i + 1]
-      score = lines[i + 2].upper()
-      thru = lines[i + 3].upper()
-
-      if not re.match(r"^(T?\d+)$", pos):
-          continue
-      if len(name.split()) < 2:
-          continue
-      if not re.match(r"^([+-]?\d+|E|CUT|WD|DQ|MDF)$", score):
-          continue
-      if not re.match(r"^(F|\d+\*?|-)$", thru):
-          continue
-
-      key = name.lower()
-      if key in seen:
-          continue
-      seen.add(key)
-
-      players.append({
-          "pos": pos,
-          "name": name,
-          "score": normalize_score(score),
-          "thru": normalize_thru(thru),
-      })
-
-    return players
-
-
-def parse_espn(html):
-    """
-    ESPN page text is often easier to recover than the raw DOM structure.
-    We search scripts/text for leaderboard-like rows.
-    """
-    soup = BeautifulSoup(html, "html.parser")
-
-    script_text = "\n".join(s.get_text(" ", strip=True) for s in soup.find_all("script"))
-    body_text = soup.get_text("\n", strip=True)
-    haystack = script_text + "\n" + body_text
-
-    players = []
-    seen = set()
-
-    # Very tolerant name pattern:
-    # catches names in leaderboard-like text blocks
-    pattern = re.compile(
-        r'(?P<pos>T?\d+)\s+'
-        r'(?P<name>[A-Z][A-Za-z.\'’\-]+(?:\s+[A-Z][A-Za-z.\'’\-]+)+)\s+'
-        r'(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)\s+'
-        r'(?P<thru>F|\d+\*?)'
+    # We extract:
+    # pos = leading T?\d+
+    # name = linked player name
+    # score = token immediately after player link
+    # thru = next token after "today"
+    row_pattern = re.compile(
+        r'^(?P<pos>T?\d+)\s*.*?【\d+†(?P<name>[^】]+)】\s*'
+        r'(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)\s*'
+        r'(?P<today>[+-]?\d+|E|-)\s+'
+        r'(?P<thru>F|\d+\*?)\b',
+        re.IGNORECASE
     )
 
-    for m in pattern.finditer(haystack):
+    for line in lines[start_idx:]:
+        if line.startswith("ADVERTISEMENT") or line.startswith("ESPN BET") or line.startswith("Full Leaderboard"):
+            break
+
+        m = row_pattern.search(line)
+        if not m:
+            continue
+
         name = clean_text(m.group("name"))
+        if len(name.split()) < 2:
+            continue
+
         key = name.lower()
         if key in seen:
             continue
@@ -207,12 +174,7 @@ def main():
     for page in PAGES:
         try:
             html = fetch_page(page["url"])
-
-            players = []
-            if "pgatour.com" in page["url"]:
-                players = parse_pga_tour(html)
-            elif "espn.com" in page["url"]:
-                players = parse_espn(html)
+            players = parse_espn(html)
 
             if players:
                 output = build_output(
