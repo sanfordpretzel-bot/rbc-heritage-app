@@ -90,7 +90,6 @@ def parse_espn(html):
     players = []
     seen = set()
 
-    # Find the start of the leaderboard section
     start_idx = None
     for i, line in enumerate(lines):
         if "POS PLAYER SCORE TODAY THRU" in line.upper():
@@ -100,33 +99,50 @@ def parse_espn(html):
     if start_idx is None:
         return []
 
-    # ESPN rows look like:
-    # 1-:contentReference[oaicite:1]{index=1}-19-2 14 65 63 68--196
-    # T4 15-13-4 F 67 68 69 67 271
-    #
-    # We extract:
-    # pos = leading T?\d+
-    # name = linked player name
-    # score = token immediately after player link
-    # thru = next token after "today"
-    row_pattern = re.compile(
-        r'^(?P<pos>T?\d+)\s*.*?【\d+†(?P<name>[^】]+)】\s*'
-        r'(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)\s*'
-        r'(?P<today>[+-]?\d+|E|-)\s+'
-        r'(?P<thru>F|\d+\*?)\b',
-        re.IGNORECASE
-    )
-
     for line in lines[start_idx:]:
-        if line.startswith("ADVERTISEMENT") or line.startswith("ESPN BET") or line.startswith("Full Leaderboard"):
+        upper = line.upper()
+        if upper.startswith("ADVERTISEMENT") or upper.startswith("ESPN BET") or upper.startswith("FULL LEADERBOARD"):
             break
 
-        m = row_pattern.search(line)
-        if not m:
+        # Find player name inside the ESPN link token: 
+        name_match = re.search(r'【\d+†([^】]+)】', line)
+        if not name_match:
             continue
 
-        name = clean_text(m.group("name"))
+        name = clean_text(name_match.group(1))
         if len(name.split()) < 2:
+            continue
+
+        # Remove image links so we can parse around the name more easily
+        line_no_images = re.sub(r'【\d+†Image:[^】]+】', '', line)
+
+        # Position is at the very start, like:
+        # 1-
+        # 2 1
+        # T4 15
+        # T16-
+        pos_match = re.match(r'^(T?\d+)', line_no_images)
+        if not pos_match:
+            continue
+        pos = pos_match.group(1).upper()
+
+        # After the player name, ESPN packs:
+        # score + today + thru
+        # examples:
+        # -19-2 14
+        # -13-4 F
+        # -12 E 17
+        # -6+1 F
+        after_name = line_no_images.split(name_match.group(0), 1)[-1].strip()
+
+        stat_match = re.match(
+            r'(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)\s*'
+            r'(?P<today>[+-]?\d+|E|-)\s+'
+            r'(?P<thru>F|\d+\*?)\b',
+            after_name,
+            re.IGNORECASE
+        )
+        if not stat_match:
             continue
 
         key = name.lower()
@@ -135,10 +151,10 @@ def parse_espn(html):
         seen.add(key)
 
         players.append({
-            "pos": clean_text(m.group("pos")).upper(),
+            "pos": pos,
             "name": name,
-            "score": normalize_score(m.group("score")),
-            "thru": normalize_thru(m.group("thru")),
+            "score": normalize_score(stat_match.group("score")),
+            "thru": normalize_thru(stat_match.group("thru")),
         })
 
     return players
