@@ -86,13 +86,13 @@ def parse_espn(html):
     in_board = False
 
     row_pattern = re.compile(
-        r'^(?P<pos>T?\d+)'                              # position
-        r'(?:\s+\d+|-)?'                               # movement/dash after pos
-        r'【\d+†Image:[^】]+】'                          # flag image token
-        r'【\d+†(?P<name>[^】]+)】'                      # player name token
-        r'(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)'         # score
-        r'(?P<today>[+-]?\d+|E|-)\s+'                  # today
-        r'(?P<thru>F|\d+\*?)\b',                       # thru
+        r'^(?P<pos>T?\d+)'                       # position
+        r'(?:\s+\d+|-)?'                        # optional movement or dash
+        r'【\d+†Image:[^】]+】'                   # flag image token
+        r'【\d+†(?P<name>[^】]+)】'               # player name token
+        r'(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)'  # score
+        r'(?P<today>[+-]?\d+|E|-)\s+'           # today
+        r'(?P<thru>F|\d+\*?)\b',                # thru
         re.IGNORECASE,
     )
 
