@@ -79,66 +79,35 @@ def pos_sort_value(pos):
 def parse_espn(html):
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text("\n", strip=True)
-    lines = [clean_text(x) for x in text.splitlines() if clean_text(x)]
+
+    # Collapse whitespace so ESPN's packed rows can be matched across line breaks.
+    blob = re.sub(r"\s+", " ", text)
 
     players = []
     seen = set()
 
-    in_board = False
+    # Matches rows that look roughly like:
+    # 1-Image: EnglandMatt Fitzpatrick-19-2 16 ...
+    # 2-Image: USAScottie Scheffler-18-4 16 ...
+    # T4 15Image: USACollin Morikawa-13-4 F ...
+    pattern = re.compile(
+        r'(?P<pos>T?\d+)'                                   # pos
+        r'(?:\s+\d+|-)?'                                    # optional movement/dash
+        r'Image:\s*[A-Za-z .&\'-]+'                         # country/flag alt text
+        r'(?P<name>[A-Z][a-zA-Z.\'’\-]+(?:\s+[A-Z][a-zA-Z.\'’\-]+)+)'  # full name
+        r'(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)'              # score
+        r'(?P<today>[+-]?\d+|E|-)\s+'                       # today
+        r'(?P<thru>F|\d+\*?|\d{1,2}:\d{2}\s*[AP]M)',        # thru or tee time
+        re.IGNORECASE
+    )
 
-    for line in lines:
-        upper = line.upper()
+    for m in pattern.finditer(blob):
+        name = clean_text(m.group("name"))
+        pos = clean_text(m.group("pos")).upper()
+        score = normalize_score(m.group("score"))
+        thru = normalize_thru(m.group("thru"))
 
-        if "POS PLAYER SCORE TODAY THRU" in upper:
-            in_board = True
-            continue
-
-        if not in_board:
-            continue
-
-        if upper.startswith("ADVERTISEMENT") or upper.startswith("ESPN BET"):
-            break
-
-        # Remove image tokens like 
-        line2 = re.sub(r"【\d+†Image:[^】]+】", "", line)
-
-        # Find player name token like 
-        name_match = re.search(r"【\d+†([^】]+)】", line2)
-        if not name_match:
-            continue
-
-        name = clean_text(name_match.group(1))
         if len(name.split()) < 2:
-            continue
-
-        before = line2[:name_match.start()]
-        after = line2[name_match.end():]
-
-        # Position is the first leaderboard token at the start, e.g.:
-        # 1-
-        # 2 1
-        # T4 15
-        # T16-
-        pos_match = re.match(r"^\s*(T?\d+)", before)
-        if not pos_match:
-            continue
-        pos = pos_match.group(1).upper()
-
-        # After the name, ESPN has packed tokens like:
-        # -19-2 14 65 63 68--196
-        # -13-4 F 67 68 69 67 271
-        # -12 E 17 69 64 68--201
-        stat_match = re.match(
-            r"^\s*"
-            r"(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)"
-            r"\s*"
-            r"(?P<today>[+-]?\d+|E|-)"
-            r"\s+"
-            r"(?P<thru>F|\d+\*?)\b",
-            after,
-            flags=re.IGNORECASE,
-        )
-        if not stat_match:
             continue
 
         key = name.lower()
@@ -150,8 +119,8 @@ def parse_espn(html):
             {
                 "pos": pos,
                 "name": name,
-                "score": normalize_score(stat_match.group("score")),
-                "thru": normalize_thru(stat_match.group("thru")),
+                "score": score,
+                "thru": thru,
             }
         )
 
