@@ -1,54 +1,189 @@
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
+from bs4 import BeautifulSoup
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "data.json"
 
-URL = "https://site.web.api.espn.com/apis/v2/sports/golf/pga/leaderboard?event=401811942"
+URL = "https://www.espn.com/golf/leaderboard/_/tournamentId/401811942"
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+SPECIAL_SCORES = {"CUT", "WD", "DQ", "MDF"}
 
 
-def build_output(players):
+def clean_text(value):
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def load_existing():
+    if DATA_PATH.exists():
+        try:
+            return json.loads(DATA_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+    return None
+
+
+def normalize_score(score):
+    s = clean_text(score).upper()
+    if not s:
+        return ""
+    if s == "0":
+        return "E"
+    return s
+
+
+def normalize_thru(thru):
+    s = clean_text(thru).upper()
+    if not s:
+        return "-"
+    if s in {"FINAL", "FIN"}:
+        return "F"
+    return s
+
+
+def score_sort_value(score):
+    s = normalize_score(score)
+    if s in SPECIAL_SCORES:
+        return 9000
+    if s == "E":
+        return 0
+    try:
+        return int(s)
+    except Exception:
+        return 9999
+
+
+def pos_sort_value(pos):
+    s = clean_text(pos).upper().replace("T", "")
+    try:
+        return int(s)
+    except Exception:
+        return 9999
+
+
+def parse_espn(html):
+    soup = BeautifulSoup(html, "html.parser")
+    text = soup.get_text("\n", strip=True)
+    lines = [clean_text(x) for x in text.splitlines() if clean_text(x)]
+
+    players = []
+    seen = set()
+    in_board = False
+
+    row_pattern = re.compile(
+        r'^'
+        r'(?P<pos>T?\d+)'                  # position, e.g. T1, 3, T16
+        r'(?:\s+\d+)?'                    # optional movement number, e.g. "T4 15"
+        r'-?'                             # optional dash, e.g. "T1-"
+        r'【\d+†Image:[^】]+】'             # flag image token
+        r'【\d+†(?P<name>[^】]+)】'         # player name token
+        r'(?P<score>[+-]?\d+|E|CUT|WD|DQ|MDF)'   # score
+        r'(?P<today>[+-]?\d+|E|-)'        # today, often packed directly after score
+        r'\s+'
+        r'(?P<thru>F|\d+\*?|\d{1,2}:\d{2}\s*[AP]M)\b',
+        re.IGNORECASE,
+    )
+
+    for line in lines:
+        upper = line.upper()
+
+        if "POS PLAYER SCORE TODAY THRU" in upper:
+            in_board = True
+            continue
+
+        if not in_board:
+            continue
+
+        if upper.startswith("ADVERTISEMENT") or upper.startswith("ESPN BET"):
+            break
+
+        m = row_pattern.match(line)
+        if not m:
+            continue
+
+        name = clean_text(m.group("name"))
+        if len(name.split()) < 2:
+            continue
+
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+
+        players.append(
+            {
+                "pos": clean_text(m.group("pos")).upper(),
+                "name": name,
+                "score": normalize_score(m.group("score")),
+                "thru": normalize_thru(m.group("thru")),
+            }
+        )
+
+    return players
+
+
+def fetch_html():
+    resp = requests.get(URL, headers=HEADERS, timeout=30)
+    resp.raise_for_status()
+    return resp.text
+
+
+def build_output(players, note):
+    players = sorted(
+        players,
+        key=lambda p: (
+            score_sort_value(p.get("score")),
+            pos_sort_value(p.get("pos")),
+            p.get("name", ""),
+        ),
+    )
     return {
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
-        "source_name": "ESPN API",
+        "source_name": "ESPN RBC Heritage leaderboard",
         "source_url": URL,
-        "note": f"Parsed {len(players)} players successfully.",
+        "note": note,
         "players": players,
     }
 
 
 def main():
-    resp = requests.get(URL)
-    resp.raise_for_status()
-    data = resp.json()
-
-    players = []
+    existing = load_existing()
 
     try:
-        competitors = data["events"][0]["competitions"][0]["competitors"]
+        html = fetch_html()
+        players = parse_espn(html)
 
-        for c in competitors:
-            name = c["athlete"]["displayName"]
-            score = c.get("score", "")
-            pos = c.get("position", {}).get("displayName", "")
-            thru = c.get("status", {}).get("type", {}).get("shortDetail", "")
-
-            players.append({
-                "pos": pos,
-                "name": name,
-                "score": score,
-                "thru": thru
-            })
+        if players:
+            output = build_output(players, f"Parsed {len(players)} players successfully.")
+            DATA_PATH.write_text(json.dumps(output, indent=2), encoding="utf-8")
+            print(f"Updated data.json with {len(players)} players")
+            return
+        else:
+            print("Parser found 0 players")
 
     except Exception as e:
-        print("Failed parsing JSON:", e)
+        print(f"Failed to fetch/parse ESPN page: {e}")
 
-    output = build_output(players)
-    DATA_PATH.write_text(json.dumps(output, indent=2))
-    print(f"Updated data.json with {len(players)} players")
+    if existing:
+        existing["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        existing["note"] = "Refresh failed; kept last good data."
+        DATA_PATH.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        print("Kept existing data.json because refresh failed")
+    else:
+        fallback = build_output([], "Refresh failed and there was no previous data.")
+        DATA_PATH.write_text(json.dumps(fallback, indent=2), encoding="utf-8")
+        print("Wrote empty fallback data.json")
 
 
 if __name__ == "__main__":
